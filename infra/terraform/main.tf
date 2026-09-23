@@ -12,6 +12,20 @@ provider "aws" {
 }
 
 # ---------------------------------------------------------------------------
+# AWS Academy Learner Labs note: the sandbox account does not allow creating
+# new IAM roles/policies (iam:CreateRole etc. are denied by the lab's SCP).
+# Everything below runs under the pre-existing LabRole instead of the
+# per-service least-privilege roles a normal AWS account would use. This is
+# a deliberate, documented trade-off for the lab environment - see the
+# README and the final report's "appropriateness of solution" discussion
+# for the production alternative (per-service roles, as originally
+# scaffolded in git history).
+# ---------------------------------------------------------------------------
+data "aws_iam_role" "lab_role" {
+  name = "LabRole"
+}
+
+# ---------------------------------------------------------------------------
 # Networking (minimal - default VPC for Learner Labs simplicity)
 # ---------------------------------------------------------------------------
 data "aws_vpc" "default" {
@@ -128,32 +142,10 @@ resource "aws_sqs_queue" "microservice_queue" {
   message_retention_seconds  = 3600
 }
 
-# Node-RED's own role: allowed to SEND to all three queues, but not to
-# receive/delete from any of them - it is a producer only.
-resource "aws_iam_role" "node_red_task_role" {
-  name = "fleet-node-red-task-role"
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Service = "ecs-tasks.amazonaws.com" }
-      Action    = "sts:AssumeRole"
-    }]
-  })
-}
-
-resource "aws_iam_role_policy" "node_red_sqs_send" {
-  name = "fleet-node-red-sqs-send"
-  role = aws_iam_role.node_red_task_role.id
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["sqs:SendMessage"]
-      Resource = [for q in aws_sqs_queue.microservice_queue : q.arn]
-    }]
-  })
-}
+# Node-RED and each microservice all run under LabRole in this environment
+# (see note above). LabRole is broad by Learner Labs design; the SQS
+# queue-per-service split still gives logical separation even though the
+# IAM enforcement of "least privilege" isn't possible here.
 
 # ---------------------------------------------------------------------------
 # DynamoDB: Immutable Event History
@@ -181,51 +173,99 @@ resource "aws_ecs_cluster" "fleet_cluster" {
   name = "fleet-cluster"
 }
 
-resource "aws_iam_role" "ecs_task_execution_role" {
-  name = "fleet-ecs-task-execution-role"
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Service = "ecs-tasks.amazonaws.com" }
-      Action    = "sts:AssumeRole"
-    }]
-  })
+# Each microservice's task definition/service, all running under LabRole.
+
+# ---------------------------------------------------------------------------
+# Node-RED: the ingestion/processing engine itself, running as its own
+# Fargate task. Not auto-scaled (see PR003 - a single Node-RED instance is
+# a known bottleneck candidate, documented as a limitation rather than
+# solved in this iteration).
+# ---------------------------------------------------------------------------
+data "aws_iot_endpoint" "current" {
+  endpoint_type = "iot:Data-ATS"
 }
 
-resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
-  role       = aws_iam_role.ecs_task_execution_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+resource "aws_security_group" "node_red" {
+  name   = "fleet-node-red-sg"
+  vpc_id = data.aws_vpc.default.id
+
+  ingress {
+    from_port   = 1880
+    to_port     = 1880
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"] # Node-RED editor/admin UI - restrict this in production
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 }
 
-# Each microservice gets its own task role, scoped to receive/delete only
-# on its own queue - geofencing-tracking can never touch dispatch-billing's
-# queue, etc.
-resource "aws_iam_role" "microservice_task_role" {
-  for_each = var.microservices
-  name     = "fleet-${each.key}-task-role"
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Service = "ecs-tasks.amazonaws.com" }
-      Action    = "sts:AssumeRole"
-    }]
-  })
+resource "aws_ecs_task_definition" "node_red" {
+  family                   = "fleet-node-red"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 512
+  memory                   = 1024
+  execution_role_arn       = data.aws_iam_role.lab_role.arn
+  task_role_arn            = data.aws_iam_role.lab_role.arn
+
+  container_definitions = jsonencode([{
+    name  = "node-red"
+    image = "PLACEHOLDER_ECR_IMAGE_URI" # build/push from node-red/aws/Dockerfile
+    portMappings = [{ containerPort = 1880, protocol = "tcp" }]
+    environment = [
+      { name = "AWS_REGION", value = var.aws_region },
+      { name = "GEOFENCING_QUEUE_URL", value = aws_sqs_queue.microservice_queue["geofencing-tracking"].id },
+      { name = "DISPATCH_QUEUE_URL", value = aws_sqs_queue.microservice_queue["dispatch-billing"].id },
+      { name = "ALERTING_QUEUE_URL", value = aws_sqs_queue.microservice_queue["alerting-maintenance"].id },
+      { name = "IOT_ENDPOINT", value = data.aws_iot_endpoint.current.endpoint_address },
+    ]
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = "/ecs/fleet-node-red"
+        "awslogs-region"        = var.aws_region
+        "awslogs-stream-prefix" = "node-red"
+        "awslogs-create-group"  = "true"
+      }
+    }
+  }])
 }
 
-resource "aws_iam_role_policy" "microservice_sqs_receive" {
-  for_each = var.microservices
-  name     = "fleet-${each.key}-sqs-receive"
-  role     = aws_iam_role.microservice_task_role[each.key].id
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
-      Resource = aws_sqs_queue.microservice_queue[each.key].arn
-    }]
-  })
+resource "aws_ecs_service" "node_red" {
+  name            = "node-red"
+  cluster         = aws_ecs_cluster.fleet_cluster.id
+  task_definition = aws_ecs_task_definition.node_red.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = data.aws_subnets.default.ids
+    security_groups  = [aws_security_group.node_red.id]
+    assign_public_ip = true
+  }
+}
+
+# ---------------------------------------------------------------------------
+# ECR: image repos for each service + Node-RED. Build/push commands are in
+# the README - do this before the first `terraform apply` that references
+# these images, or apply once to create the repos, push, then apply again
+# once you've swapped in the real image URIs.
+# ---------------------------------------------------------------------------
+resource "aws_ecr_repository" "microservice_repo" {
+  for_each             = var.microservices
+  name                 = "fleet-${each.key}"
+  image_tag_mutability = "MUTABLE"
+  force_delete         = true
+}
+
+resource "aws_ecr_repository" "node_red_repo" {
+  name                 = "fleet-node-red"
+  image_tag_mutability = "MUTABLE"
+  force_delete         = true
 }
 
 module "microservice" {
@@ -237,8 +277,8 @@ module "microservice" {
   container_port     = each.value.port
   cpu                = 256
   memory             = 512
-  execution_role_arn = aws_iam_role.ecs_task_execution_role.arn
-  task_role_arn      = aws_iam_role.microservice_task_role[each.key].arn
+  execution_role_arn = data.aws_iam_role.lab_role.arn
+  task_role_arn      = data.aws_iam_role.lab_role.arn
   subnets            = data.aws_subnets.default.ids
   vpc_id             = data.aws_vpc.default.id
   desired_count      = 1

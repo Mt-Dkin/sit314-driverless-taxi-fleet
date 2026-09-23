@@ -1,0 +1,7 @@
+{
+  "name": "fleet-shared",
+  "version": "1.0.0",
+  "private": true,
+  "main": "sqs-consumer.js",
+  "dependencies": { "@aws-sdk/client-sqs": "^3.687.0" }
+}

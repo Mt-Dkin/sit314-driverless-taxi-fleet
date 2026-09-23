@@ -12,12 +12,18 @@ variable "container_port" { type = number }
 variable "cpu" { type = number }
 variable "memory" { type = number }
 variable "execution_role_arn" {}
+variable "task_role_arn" { default = null } # least-privilege runtime permissions (e.g. SQS access)
 variable "subnets" { type = list(string) }
 variable "vpc_id" {}
 variable "desired_count" { type = number }
 variable "min_capacity" { type = number }
 variable "max_capacity" { type = number }
 variable "cpu_target_value" { type = number }
+variable "environment" {
+  description = "Container environment variables, e.g. [{name=\"SQS_QUEUE_URL\", value=\"...\"}]"
+  type        = list(object({ name = string, value = string }))
+  default     = []
+}
 
 resource "aws_ecs_task_definition" "this" {
   family                   = "fleet-${var.name}"
@@ -26,11 +32,13 @@ resource "aws_ecs_task_definition" "this" {
   cpu                      = var.cpu
   memory                   = var.memory
   execution_role_arn       = var.execution_role_arn
+  task_role_arn            = var.task_role_arn
 
   container_definitions = jsonencode([{
     name      = var.name
     image     = "PLACEHOLDER_ECR_IMAGE_URI" # replace after `docker push` to ECR
     portMappings = [{ containerPort = var.container_port, protocol = "tcp" }]
+    environment = var.environment
     logConfiguration = {
       logDriver = "awslogs"
       options = {

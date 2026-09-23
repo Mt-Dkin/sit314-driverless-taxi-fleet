@@ -13,35 +13,77 @@ scalable Node.js microservices on AWS ECS Fargate.
 simulator/            Node.js taxi fleet telemetry simulator + local MQTT
                        broker (dev/test stand-in for AWS IoT Core) + a
                        worker-threads load-test script
-node-red/flows.json    Importable Node-RED flow: validation, filtering,
-                       temporal + spatial aggregation, format transform,
-                       event flagging, routing to the three microservices
+node-red/local/        Local dev flow (flows.json): filtering, aggregation,
+                       transform, event flagging, routes to microservices
+                       over HTTP - used with docker-compose, no AWS needed
+node-red/aws/           AWS-deployed flow (flows.aws.json), custom
+                       Dockerfile + settings.js: identical processing
+                       logic, but publishes to each microservice's own SQS
+                       queue instead of calling them over HTTP - this is
+                       the genuinely event-driven production path
 microservices/         geofencing-tracking, dispatch-billing,
                        alerting-maintenance - each a standalone Express
-                       service + Dockerfile
-infra/terraform/       AWS infrastructure as code: IoT Core rule, SQS,
-                       DynamoDB, ECS Fargate cluster + per-service Auto
+                       service with BOTH an HTTP endpoint (local dev) and
+                       an SQS long-poll consumer (used automatically when
+                       SQS_QUEUE_URL is set, i.e. when deployed to AWS)
+microservices/shared/  Shared SQS consumer helper used by all three
+                       services
+infra/terraform/       AWS infrastructure as code: IoT Core things/certs/
+                       policies (mutual-TLS device identity for the
+                       simulator and for Node-RED, each least-privilege),
+                       per-service SQS queues + least-privilege IAM task
+                       roles, ECS Fargate cluster + per-service Auto
                        Scaling, CloudWatch alarms
-docker-compose.yml     Runs the entire stack locally (Mongo, broker,
-                       Node-RED, all three services, simulator)
+docker-compose.yml     Runs the entire local-dev stack (Mongo, broker,
+                       Node-RED local flow, all three services in HTTP
+                       mode, simulator)
 ```
 
-## What has been verified locally (Weeks 1-6)
+## Architecture note: why two Node-RED flows / two service modes
+
+The project proposal specifies SQS decoupling Node-RED from the
+microservices (an event-driven architecture, one of the six distinction
+requirements). Testing that against a real SQS queue locally isn't
+practical without an AWS account, so:
+
+- **Local dev** (`docker-compose up`): Node-RED (`node-red/local/flows.json`)
+  calls each microservice over plain HTTP. Fully working and tested in
+  this environment - good for verifying the filtering/aggregation logic
+  and each microservice's business logic in isolation.
+- **AWS deployment** (`node-red/aws/`): Node-RED publishes to SQS via the
+  AWS SDK; each microservice's `SQS_QUEUE_URL` environment variable
+  (injected by Terraform) switches it into consumer mode automatically.
+  This is the version that satisfies the "event-based microservice
+  architecture" requirement and is what should be running when you
+  capture your Week 7-8 evidence.
+
+Both flows share identical filtering/aggregation/transformation logic -
+only the final "how do I hand this off to the microservices" step
+differs.
+
+## What has been verified locally (Weeks 1-7)
 
 - [x] Simulator connects to an MQTT broker and publishes valid telemetry
       matching the Data Design schema (`vehicle_id`, `ride_id`, `timestamp`,
       `coordinates`, `speed`, `battery_percentage`, `passenger_status`,
       `status_flags`)
 - [x] Local broker receives and logs live throughput
-- [x] Node-RED flow JSON validated and ready to import (filtering,
+- [x] Local Node-RED flow JSON validated and ready to import (filtering,
       temporal/spatial aggregation, event flagging, routing all implemented
       as function nodes per the proposal's "Fundamental Data Preparation"
       section)
-- [x] All three microservices run independently, expose `/health`, and
-      correctly process a real request each (geofence check, fare
-      calculation on ride completion, CRITICAL alert on SUSPECTED_CRASH)
+- [x] AWS Node-RED flow JSON validated, all Function node bodies checked
+      for JS syntax errors (cannot be run end-to-end without a real SQS
+      queue/IoT Core endpoint)
+- [x] All three microservices run independently in HTTP mode, expose
+      `/health`, and correctly process a real request each (geofence
+      check, fare calculation on ride completion, CRITICAL alert on
+      SUSPECTED_CRASH) - retested after the SQS refactor, all still pass
 - [x] Local worker-threads stress test: 100 simulated vehicles sustained
       ~71 msg/s through the local broker (see `simulator/stress-test.js`)
+- [x] Least-privilege IAM designed: simulator can only publish, Node-RED
+      can only subscribe to telemetry + send to SQS (never receive), each
+      microservice can only receive/delete from its own queue
 
 ## What still needs to happen in your AWS account (Week 7-8)
 
@@ -50,20 +92,27 @@ This environment has no AWS credentials, so the Terraform in
 
 1. `cd infra/terraform && terraform init && terraform plan` against your
    AWS Learner Labs credentials.
-2. Build + push each microservice image to ECR, then replace the
-   `PLACEHOLDER_ECR_IMAGE_URI` in `modules/fargate-service/main.tf` with
-   the real image URI for each service.
+2. Build + push each microservice image to ECR (build context is
+   `./microservices`, e.g.
+   `docker build -f microservices/geofencing-tracking/Dockerfile -t <ecr-uri> microservices`),
+   then replace the `PLACEHOLDER_ECR_IMAGE_URI` in
+   `modules/fargate-service/main.tf` with the real image URI for each
+   service. Do the same for `node-red/aws/Dockerfile`.
 3. `terraform apply`.
 4. **Learner Labs caveat:** the Academy/Learner Labs role is often
-   restricted from creating new IAM roles/policies. If `aws_iam_role`
-   resources fail, check whether a pre-existing lab role (e.g.
-   `LabRole`) needs to be referenced instead of creating new ones.
-5. Point the simulator's `MQTT_URL` at your AWS IoT Core endpoint (use
-   the IoT Core certs, not username/password) and re-run the stress test
-   against the deployed stack for your scalability evidence.
-6. Screenshot: ECS service task count scaling up under load, the
-   CloudWatch CPU alarm firing, and the SQS queue depth during a burst -
-   this is your Week 7-8 evidence.
+   restricted from creating new IAM roles/policies or IoT certificates.
+   If any `aws_iam_role` / `aws_iot_certificate` resources fail, check
+   whether a pre-existing lab role (e.g. `LabRole`) needs to be
+   referenced instead of creating new ones.
+5. Download the generated IoT certificate/private key (Terraform outputs
+   these - see `terraform output`) and set the Node-RED and simulator
+   environment/secrets accordingly so they can complete the mutual-TLS
+   handshake against IoT Core.
+6. Re-run the stress test against the deployed stack for your scalability
+   evidence.
+7. Screenshot: ECS service task count scaling up under load, the
+   CloudWatch CPU alarm firing, and SQS queue depth during a burst - this
+   is your Week 7-8 evidence.
 
 ## Running everything locally right now
 
@@ -71,5 +120,5 @@ This environment has no AWS credentials, so the Terraform in
 docker compose up --build
 ```
 
-Then open Node-RED at `http://localhost:1880` and import
-`node-red/flows.json` (Menu -> Import -> paste/select file).
+Then open Node-RED at `http://localhost:1880` - it loads
+`node-red/local/flows.json` automatically.

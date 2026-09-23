@@ -17,22 +17,28 @@ services:
   node-red:
     image: nodered/node-red:3.1
     ports: ["1880:1880"]
-    volumes: ["./node-red:/data"]
+    volumes: ["./node-red/local:/data"]
     depends_on: [mqtt-broker]
 
   geofencing-tracking:
-    build: ./microservices/geofencing-tracking
+    build:
+      context: ./microservices
+      dockerfile: ./geofencing-tracking/Dockerfile
     environment:
       - MONGO_URL=mongodb://mongo:27017
     ports: ["3001:3001"]
     depends_on: [mongo]
 
   dispatch-billing:
-    build: ./microservices/dispatch-billing
+    build:
+      context: ./microservices
+      dockerfile: ./dispatch-billing/Dockerfile
     ports: ["3002:3002"]
 
   alerting-maintenance:
-    build: ./microservices/alerting-maintenance
+    build:
+      context: ./microservices
+      dockerfile: ./alerting-maintenance/Dockerfile
     ports: ["3003:3003"]
 
   simulator:

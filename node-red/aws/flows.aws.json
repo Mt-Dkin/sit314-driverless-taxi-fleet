@@ -1,0 +1,29 @@
+[
+  {
+    "id": "tab-fleet-ingestion",
+    "type": "tab",
+    "label": "Fleet Ingestion Pipeline (AWS)",
+    "disabled": false,
+    "info": "AWS-deployed variant of the ingestion pipeline. Identical filtering/aggregation/transformation logic to flows.json, but publishes to each microservice's own SQS queue (the 'Event Router / Queue' in Figure 1) instead of calling the services over HTTP - this is what makes the downstream microservices genuinely event-driven rather than RPC targets."
+  },
+
+  { "id": "mqtt-broker-cfg", "type": "mqtt-broker", "name": "AWS IoT Core", "broker": "YOUR_ACCOUNT-ats.iot.us-east-1.amazonaws.com", "port": "8883", "clientid": "fleet-node-red-ingestion", "usetls": true, "protocolVersion": "4", "keepalive": "60", "cleansession": true, "verifyservercert": true },
+
+  { "id": "n-mqtt-in", "type": "mqtt in", "z": "tab-fleet-ingestion", "name": "fleet/+/telemetry", "topic": "fleet/+/telemetry", "qos": "0", "datatype": "json", "broker": "mqtt-broker-cfg", "x": 140, "y": 100, "wires": [["n-validate"]] },
+
+  { "id": "n-validate", "type": "function", "z": "tab-fleet-ingestion", "name": "Malformed payload rejection", "func": "const required = ['vehicle_id', 'timestamp', 'coordinates', 'speed', 'battery_percentage'];\nconst payload = msg.payload;\nconst missing = required.filter(k => payload[k] === undefined || payload[k] === null);\nif (missing.length > 0) {\n    node.warn(`Rejected malformed payload from ${payload.vehicle_id || 'unknown'}: missing ${missing.join(',')}`);\n    return null;\n}\nreturn msg;", "outputs": 1, "x": 380, "y": 100, "wires": [["n-static-filter"]] },
+
+  { "id": "n-static-filter", "type": "function", "z": "tab-fleet-ingestion", "name": "Static-state + threshold filter", "func": "const ctx = context.get('lastByVehicle') || {};\nconst v = msg.payload.vehicle_id;\nconst prev = ctx[v];\nif (msg.payload.speed === 0 && prev && prev.speed === 0) {\n    ctx[v] = msg.payload; context.set('lastByVehicle', ctx); return null;\n}\nif (prev && Math.abs(prev.battery_percentage - msg.payload.battery_percentage) < 0.5 && prev.speed === msg.payload.speed) {\n    ctx[v] = msg.payload; context.set('lastByVehicle', ctx); return null;\n}\nctx[v] = msg.payload; context.set('lastByVehicle', ctx); return msg;", "outputs": 1, "x": 660, "y": 100, "wires": [["n-format-transform"]] },
+
+  { "id": "n-format-transform", "type": "function", "z": "tab-fleet-ingestion", "name": "Format transform (GeoJSON)", "func": "const { lat, lng } = msg.payload.coordinates;\nmsg.payload.location = { type: 'Point', coordinates: [lng, lat] };\nreturn msg;", "outputs": 1, "x": 900, "y": 100, "wires": [["n-temporal-agg", "n-spatial-agg", "n-event-flag"]] },
+
+  { "id": "n-temporal-agg", "type": "function", "z": "tab-fleet-ingestion", "name": "Temporal aggregation (rolling avg speed)", "func": "const v = msg.payload.vehicle_id;\nconst windows = context.get('speedWindows') || {};\nconst w = windows[v] || [];\nw.push(msg.payload.speed);\nif (w.length > 10) w.shift();\nwindows[v] = w;\ncontext.set('speedWindows', windows);\nconst avg = w.reduce((a, b) => a + b, 0) / w.length;\nmsg.payload.avg_speed_rolling = Number(avg.toFixed(1));\nreturn msg;", "outputs": 1, "x": 900, "y": 180, "wires": [["n-router"]] },
+
+  { "id": "n-spatial-agg", "type": "function", "z": "tab-fleet-ingestion", "name": "Spatial aggregation (geohash zone)", "func": "const { lat, lng } = msg.payload.coordinates;\nconst zoneLat = Math.floor(lat * 1000);\nconst zoneLng = Math.floor(lng * 1000);\nconst zoneId = `zone_${zoneLat}_${zoneLng}`;\nmsg.payload.zone_id = zoneId;\nconst zoneCounts = context.get('zoneCounts') || {};\nzoneCounts[zoneId] = (zoneCounts[zoneId] || 0) + 1;\ncontext.set('zoneCounts', zoneCounts);\nmsg.payload.zone_vehicle_count = zoneCounts[zoneId];\nreturn msg;", "outputs": 1, "x": 900, "y": 260, "wires": [["n-router"]] },
+
+  { "id": "n-event-flag", "type": "function", "z": "tab-fleet-ingestion", "name": "Event flagging", "func": "msg.payload.status_flags = msg.payload.status_flags || [];\nif (msg.payload.proximity_warning && msg.payload.speed < 5 && !msg.payload.status_flags.includes('SUSPECTED_CRASH')) {\n    msg.payload.status_flags.push('SUSPECTED_CRASH');\n}\nreturn msg;", "outputs": 1, "x": 900, "y": 340, "wires": [["n-router"]] },
+
+  { "id": "n-router", "type": "function", "z": "tab-fleet-ingestion", "name": "Event Router -> SQS", "info": "Publishes to the correct per-microservice SQS queue via the AWS SDK client injected in settings.js functionGlobalContext. See node-red/settings.js.", "func": "const [SQSClient, SendMessageCommand] = global.get(['SQSClient','SendMessageCommand']);\nconst queueUrls = global.get('queueUrls');\nconst region = global.get('awsRegion');\n\nlet category = 'geofencing';\nif ((msg.payload.status_flags || []).length > 0) {\n    category = 'alerting';\n} else if (msg.payload.ride_id !== undefined && msg.payload.ride_id !== null) {\n    category = 'dispatch';\n}\n\nconst client = new SQSClient({ region });\nclient.send(new SendMessageCommand({\n    QueueUrl: queueUrls[category],\n    MessageBody: JSON.stringify(msg.payload),\n})).then(() => {\n    msg.routed_to = category;\n    node.send(msg);\n    done();\n}).catch((err) => {\n    node.error(`SQS publish failed (${category}): ${err.message}`, msg);\n    done(err);\n});\nreturn;", "outputs": 1, "x": 1150, "y": 220, "wires": [["n-debug"]] },
+
+  { "id": "n-debug", "type": "debug", "z": "tab-fleet-ingestion", "name": "Pipeline output", "active": true, "tosidebar": true, "console": false, "tostatus": false, "complete": "payload", "x": 1400, "y": 220, "wires": [] }
+]

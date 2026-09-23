@@ -15,3 +15,14 @@ variable "microservices" {
     "alerting-maintenance" = { port = 3003 }
   }
 }
+
+variable "microservice_extra_env" {
+  description = "Extra per-service environment variables, keyed by microservice name"
+  type        = map(list(object({ name = string, value = string })))
+  default = {
+    "geofencing-tracking" = [
+      { name = "MONGO_URL", value = "mongodb://REPLACE_WITH_ATLAS_OR_DOCUMENTDB_URI" },
+      { name = "DB_NAME", value = "fleet" }
+    ]
+  }
+}

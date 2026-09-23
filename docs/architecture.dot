@@ -1,0 +1,86 @@
+digraph G {
+  graph [rankdir=TB, fontname="Arial", fontsize=13, nodesep=0.35, ranksep=0.45, pad=0.25, newrank=true, compound=true];
+  node  [shape=box, style="rounded,filled", fillcolor="#E8EAF6", color="#5C6BC0", fontname="Arial", fontsize=11, margin="0.15,0.07"];
+  edge  [fontname="Arial", fontsize=9, color="#333333", arrowsize=0.7];
+
+  subgraph cluster_edge {
+    label="Edge Layer: Simulated Fleet (WSL, Node.js)"; style="rounded,filled"; fillcolor="#FFFDE7"; color="#C9B400";
+    sim  [label="Node.js Taxi Simulator\n(10 taxis @ 2 Hz)"];
+    sens [label="Simulated sensors:\nGPS, speed, battery,\npassenger status, proximity"];
+    sens -> sim [arrowhead=none, style=dotted];
+  }
+
+  subgraph cluster_iot {
+    label="AWS IoT Core"; style="rounded,filled"; fillcolor="#E3F2FD"; color="#1E88E5";
+    broker [label="MQTT broker\ntopic: fleet/+/telemetry"];
+    pol    [label="IoT policies\n(simulator: publish only;\nNode-RED: subscribe only)", fillcolor="#FFEBEE", color="#E53935"];
+    pol -> broker [arrowhead=none, style=dotted];
+  }
+
+  subgraph cluster_ingest {
+    label="Cloud Ingestion: Node-RED on ECS Fargate (1 task)"; style="rounded,filled"; fillcolor="#F1F8E9"; color="#7CB342";
+    nr   [label="Node-RED Stream Engine\nvalidate -> filter -> aggregate\n-> transform -> flag events"];
+    disc [label="Discard\n(malformed, idle,\nunchanged readings)", fillcolor="#EEEEEE", color="#9E9E9E"];
+    rtr  [label="Event Router", shape=diamond, fillcolor="#E8EAF6"];
+    nr -> disc [label=" filter"];
+    nr -> rtr  [label=" enriched\n event"];
+  }
+
+  subgraph cluster_sqs {
+    label="Event Queues: Amazon SQS (one per service)"; style="rounded,filled"; fillcolor="#FCE4EC"; color="#D81B60";
+    q1 [label="geofencing-tracking\nqueue"];
+    q2 [label="dispatch-billing\nqueue"];
+    q3 [label="alerting-maintenance\nqueue"];
+  }
+
+  subgraph cluster_svc {
+    label="Event-Driven Microservices: ECS Fargate (1-5 tasks each)"; style="rounded,filled"; fillcolor="#FFFDE7"; color="#C9B400";
+    s1 [label="Geofencing &\nTracking Service"];
+    s2 [label="Dispatch &\nBilling Service"];
+    s3 [label="Alerting &\nMaintenance Service"];
+  }
+
+  subgraph cluster_scale {
+    label="Auto-Scaling Infrastructure"; style="rounded,filled"; fillcolor="#EDE7F6"; color="#5E35B1";
+    cw  [label="Amazon CloudWatch\nmetrics: SQS backlog, CPU\nlogs: all services"];
+    aas [label="Application Auto Scaling\ntarget tracking:\nbacklog 100, CPU 60%"];
+    cw -> aas [label=" alarms"];
+  }
+
+  subgraph cluster_store {
+    label="Data Persistence"; style="rounded,filled"; fillcolor="#ECEFF1"; color="#78909C";
+    mem [label="In-memory service state\n(vehicle state, rides, alerts)"];
+    ddb [label="DynamoDB: event history\n(provisioned, not yet used)", style="rounded,filled,dashed", fillcolor="#FFFFFF"];
+  }
+
+  subgraph cluster_ops {
+    label="Deployment"; style="rounded,filled"; fillcolor="#FAFAFA"; color="#9E9E9E";
+    tf  [label="Terraform (IaC)", fillcolor="#FFFFFF"];
+    ecr [label="Amazon ECR\n(container images)", fillcolor="#FFFFFF"];
+    tf -> ecr [style=dotted, arrowhead=none];
+  }
+
+  load [label="Load Generator\n(scaling test tool,\nup to 250 msg/s)", fillcolor="#FFF3E0", color="#EF6C00", style="rounded,filled,dashed"];
+  op  [label="Fleet operator\n(CRITICAL / WARNING alerts)", shape=box, style="rounded", color="#E53935", fontcolor="#C62828"];
+  act [label="Vehicle commands\n(future work)", shape=box, style="rounded,dashed", color="#9E9E9E", fontcolor="#757575"];
+
+  sim -> broker [label=" MQTT over TLS 8883\n X.509 mutual TLS"];
+  broker -> nr  [label=" subscribe\n (mutual TLS)"];
+  rtr -> q1 [label=" location"];
+  rtr -> q2 [label=" ride events"];
+  rtr -> q3 [label=" hazards /\n battery"];
+  load -> q3 [lhead=cluster_sqs, style=dashed, color="#EF6C00", fontcolor="#EF6C00", label=" SendMessageBatch\n (any queue)"];
+  q1 -> s1 [label=" long poll"];
+  q2 -> s2 [label=" long poll"];
+  q3 -> s3 [label=" long poll"];
+  s1 -> mem; s2 -> mem; s3 -> mem;
+  s2 -> ddb [style=dashed, color="#9E9E9E", label=" planned", fontcolor="#757575"];
+  s3 -> op  [color="#E53935"];
+  s3 -> act [style=dashed, color="#9E9E9E"];
+  q1 -> cw [style=dashed, color="#5E35B1", label=" queue depth", fontcolor="#5E35B1", constraint=false];
+  aas -> s1 [lhead=cluster_svc, style=dashed, color="#5E35B1", fontcolor="#5E35B1", label=" scales tasks\n in/out"];
+
+  {rank=same; q1; q2; q3;}
+  {rank=same; cw; tf;}
+  {rank=same; rtr; load;}
+}

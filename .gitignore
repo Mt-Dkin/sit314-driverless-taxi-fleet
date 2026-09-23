@@ -10,3 +10,4 @@ node-red/aws/certs/*.key
 *.tfstate
 *.tfstate.*
 *.csv
+!results/*.csv

@@ -1,0 +1,57 @@
+digraph DFD {
+  graph [rankdir=TB, fontname="Arial", fontsize=12, nodesep=0.3, ranksep=0.4, pad=0.25,
+         label="Level 1 Data Flow Diagram: Autonomous Taxi Fleet Management\n(rectangles = external entities, circles = processes, open boxes = data stores)", labelloc=t];
+  node [fontname="Arial", fontsize=10];
+  edge [fontname="Arial", fontsize=8.5, color="#333333", arrowsize=0.7];
+
+  // External entities
+  fleet [label="Taxi Fleet\n(simulated vehicles)", shape=box, style=filled, fillcolor="#FFFDE7", color="#C9B400", penwidth=1.5];
+  opr   [label="Fleet Operator", shape=box, style=filled, fillcolor="#FFEBEE", color="#E53935", penwidth=1.5];
+
+  // Processes
+  node [shape=circle, style=filled, fillcolor="#E8EAF6", color="#5C6BC0", fixedsize=true, width=1.35];
+  p1 [label="1.0\nAuthenticate\n& ingest\n(IoT Core)"];
+  p2 [label="2.0\nValidate\n& filter\n(Node-RED)"];
+  p3 [label="3.0\nAggregate\n& transform\n(Node-RED)"];
+  p4 [label="4.0\nFlag events\n& route\n(Node-RED)"];
+  p5 [label="5.0\nTrack &\ngeofence"];
+  p6 [label="6.0\nDispatch\n& bill"];
+  p7 [label="7.0\nAlert &\nmaintain"];
+  p8 [label="8.0\nMonitor\n& scale"];
+
+  // Data stores (open-ended boxes)
+  node [shape=record, style=filled, fillcolor="#FCE4EC", color="#D81B60", fixedsize=false, width=0];
+  d1 [label="D1 | Geofencing queue (SQS)"];
+  d2 [label="D2 | Dispatch queue (SQS)"];
+  d3 [label="D3 | Alerting queue (SQS)"];
+  node [fillcolor="#ECEFF1", color="#78909C"];
+  d4 [label="D4 | Vehicle state (in memory)"];
+  d5 [label="D5 | Ride event history (in memory;\nDynamoDB planned)"];
+  d6 [label="D6 | Alert log (in memory)"];
+  d7 [label="D7 | CloudWatch metrics & logs"];
+
+  fleet -> p1 [label="raw telemetry JSON\n(MQTT, X.509 mutual TLS)"];
+  p1 -> p2 [label="authorised telemetry"];
+  p2 -> p3 [label="valid, changed\nreadings"];
+  p3 -> p4 [label="enriched readings\n(GeoJSON, rolling avg speed,\nzone, zone count)"];
+  p4 -> d1 [label="location events"];
+  p4 -> d2 [label="ride events\n(ride_id present)"];
+  p4 -> d3 [label="hazard events\n(status_flags present)"];
+  d1 -> p5 [label="location events"];
+  d2 -> p6 [label="ride events"];
+  d3 -> p7 [label="hazard events"];
+  p5 -> d4 [label="position,\ngeofence status"];
+  p6 -> d5 [label="ride records, fares"];
+  p7 -> d6 [label="alerts"];
+  p7 -> opr [label="CRITICAL / WARNING\nalerts", color="#E53935", fontcolor="#C62828"];
+  d1 -> d7 [label="queue depth", style=dashed, color="#5E35B1", fontcolor="#5E35B1"];
+  d7 -> p8 [label="backlog, CPU", style=dashed, color="#5E35B1", fontcolor="#5E35B1"];
+  p8 -> p5 [label="desired task count\n(1-5)", style=dashed, color="#5E35B1", fontcolor="#5E35B1"];
+
+  discard [label="Discarded: malformed, idle,\nunchanged readings", shape=plaintext, fontcolor="#757575", fontsize=9];
+  p2 -> discard [style=dotted, color="#9E9E9E", arrowhead=none];
+
+  {rank=same; d1; d2; d3;}
+  {rank=same; p5; p6; p7;}
+  {rank=same; d4; d5; d6; opr;}
+}

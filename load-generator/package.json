@@ -1,0 +1,8 @@
+{
+  "name": "fleet-load-generator",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Injects a controlled burst of realistic taxi telemetry events into a microservice's SQS queue to drive the auto-scaling experiment.",
+  "main": "sqs-burst.js",
+  "dependencies": { "@aws-sdk/client-sqs": "^3.687.0" }
+}

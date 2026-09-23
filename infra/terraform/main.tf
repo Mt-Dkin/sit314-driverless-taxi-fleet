@@ -214,7 +214,7 @@ resource "aws_ecs_task_definition" "node_red" {
 
   container_definitions = jsonencode([{
     name  = "node-red"
-    image = "PLACEHOLDER_ECR_IMAGE_URI" # build/push from node-red/aws/Dockerfile
+    image = "277870706905.dkr.ecr.us-east-1.amazonaws.com/fleet-node-red:latest" # build/push from node-red/aws/Dockerfile
     portMappings = [{ containerPort = 1880, protocol = "tcp" }]
     environment = [
       { name = "AWS_REGION", value = var.aws_region },
@@ -241,6 +241,8 @@ resource "aws_ecs_service" "node_red" {
   task_definition = aws_ecs_task_definition.node_red.arn
   desired_count   = 1
   launch_type     = "FARGATE"
+  deployment_minimum_healthy_percent = 0
+  deployment_maximum_percent         = 100
 
   network_configuration {
     subnets          = data.aws_subnets.default.ids
@@ -285,6 +287,8 @@ module "microservice" {
   min_capacity       = 1
   max_capacity       = 5
   cpu_target_value   = 60
+  queue_name         = aws_sqs_queue.microservice_queue[each.key].name
+  backlog_target     = 100
   environment = concat(
     [
       { name = "SQS_QUEUE_URL", value = aws_sqs_queue.microservice_queue[each.key].id },

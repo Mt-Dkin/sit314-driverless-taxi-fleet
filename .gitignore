@@ -2,3 +2,11 @@
 .env
 *.log
 dist/
+certs/
+node-red/aws/certs/*.pem
+node-red/aws/certs/*.key
+**/.env
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.csv

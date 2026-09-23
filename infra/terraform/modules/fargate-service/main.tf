@@ -36,7 +36,7 @@ resource "aws_ecs_task_definition" "this" {
 
   container_definitions = jsonencode([{
     name      = var.name
-    image     = "PLACEHOLDER_ECR_IMAGE_URI" # replace after `docker push` to ECR
+    image     = "277870706905.dkr.ecr.us-east-1.amazonaws.com/fleet-${var.name}:latest" # replace after `docker push` to ECR
     portMappings = [{ containerPort = var.container_port, protocol = "tcp" }]
     environment = var.environment
     logConfiguration = {
@@ -91,7 +91,7 @@ resource "aws_ecs_service" "this" {
 resource "aws_appautoscaling_target" "this" {
   max_capacity       = var.max_capacity
   min_capacity       = var.min_capacity
-  resource_id        = "service/${var.cluster_id}/${aws_ecs_service.this.name}"
+  resource_id        = "service/${element(split("/", var.cluster_id), 1)}/${aws_ecs_service.this.name}"
   scalable_dimension = "ecs:service:DesiredCount"
   service_namespace  = "ecs"
 }
@@ -110,5 +110,45 @@ resource "aws_appautoscaling_policy" "cpu_scaling" {
     target_value       = var.cpu_target_value
     scale_in_cooldown  = 60
     scale_out_cooldown = 60
+  }
+}
+# --- Week 8: backlog-based scaling ---------------------------------------
+# These services are I/O-bound queue consumers: under load, messages pile
+# up in SQS long before CPU rises, so the CPU policy alone would rarely
+# trigger. This second target-tracking policy scales on the queue backlog
+# (messages waiting), which directly measures whether the service is
+# keeping up. ECS takes the higher of the two policies' desired counts.
+variable "queue_name" {
+  description = "SQS queue this service consumes from (used for backlog scaling)"
+  type        = string
+}
+
+variable "backlog_target" {
+  description = "Target number of visible messages in the queue"
+  type        = number
+  default     = 100
+}
+
+resource "aws_appautoscaling_policy" "backlog_scaling" {
+  name               = "fleet-${var.name}-backlog-scaling"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.this.resource_id
+  scalable_dimension = aws_appautoscaling_target.this.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.this.service_namespace
+
+  target_tracking_scaling_policy_configuration {
+    customized_metric_specification {
+      metric_name = "ApproximateNumberOfMessagesVisible"
+      namespace   = "AWS/SQS"
+      statistic   = "Average"
+
+      dimensions {
+        name  = "QueueName"
+        value = var.queue_name
+      }
+    }
+    target_value       = var.backlog_target
+    scale_in_cooldown  = 60
+    scale_out_cooldown = 30
   }
 }

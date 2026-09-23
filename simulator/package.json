@@ -1,0 +1,18 @@
+{
+  "name": "taxi-fleet-simulator",
+  "version": "1.0.0",
+  "description": "Node.js edge simulator for the Cloud-Native Autonomous Fleet Management project. Generates mock GPS/speed/battery/proximity telemetry for n virtual taxis and publishes it over MQTT.",
+  "main": "simulator.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node simulator.js",
+    "broker": "node local-broker.js",
+    "stress": "node stress-test.js"
+  },
+  "dependencies": {
+    "mqtt": "^5.10.1",
+    "aedes": "^0.51.3",
+    "websocket-stream": "^5.5.2",
+    "dotenv": "^16.4.5"
+  }
+}

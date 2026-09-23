@@ -1,0 +1,36 @@
+[
+  {
+    "id": "tab-fleet-ingestion",
+    "type": "tab",
+    "label": "Fleet Ingestion Pipeline",
+    "disabled": false,
+    "info": "Implements the Node-RED Stream Engine from Figure 1: filtering, temporal + spatial aggregation, format transformation, event flagging, and routing into the three microservices via the Event Router / Queue (SQS)."
+  },
+
+  { "id": "mqtt-broker-cfg", "type": "mqtt-broker", "name": "Fleet Broker", "broker": "localhost", "port": "1883", "clientid": "", "usetls": false, "protocolVersion": "4", "keepalive": "60", "cleansession": true },
+
+  { "id": "n-mqtt-in", "type": "mqtt in", "z": "tab-fleet-ingestion", "name": "fleet/+/telemetry", "topic": "fleet/+/telemetry", "qos": "0", "datatype": "json", "broker": "mqtt-broker-cfg", "x": 140, "y": 100, "wires": [["n-validate"]] },
+
+  { "id": "n-validate", "type": "function", "z": "tab-fleet-ingestion", "name": "Malformed payload rejection", "func": "// Reject payloads missing vital schema keys (per proposal, Data Filtering #3)\nconst required = ['vehicle_id', 'timestamp', 'coordinates', 'speed', 'battery_percentage'];\nconst payload = msg.payload;\nconst missing = required.filter(k => payload[k] === undefined || payload[k] === null);\nif (missing.length > 0) {\n    node.warn(`Rejected malformed payload from ${payload.vehicle_id || 'unknown'}: missing ${missing.join(',')}`);\n    return null; // drop\n}\nreturn msg;", "outputs": 1, "x": 380, "y": 100, "wires": [["n-static-filter"]] },
+
+  { "id": "n-static-filter", "type": "function", "z": "tab-fleet-ingestion", "name": "Static-state + threshold filter", "func": "// Data Filtering #1 (idle-state) and #2 (threshold) from the proposal.\nconst ctx = context.get('lastByVehicle') || {};\nconst v = msg.payload.vehicle_id;\nconst prev = ctx[v];\n\n// Idle-state filtering: drop consecutive 0km/h readings after the first.\nif (msg.payload.speed === 0 && prev && prev.speed === 0) {\n    ctx[v] = msg.payload;\n    context.set('lastByVehicle', ctx);\n    return null;\n}\n\n// Threshold filtering: ignore insignificant battery deltas (<0.5%).\nif (prev && Math.abs(prev.battery_percentage - msg.payload.battery_percentage) < 0.5\n    && prev.speed === msg.payload.speed) {\n    ctx[v] = msg.payload;\n    context.set('lastByVehicle', ctx);\n    return null;\n}\n\nctx[v] = msg.payload;\ncontext.set('lastByVehicle', ctx);\nreturn msg;", "outputs": 1, "x": 660, "y": 100, "wires": [["n-format-transform"]] },
+
+  { "id": "n-format-transform", "type": "function", "z": "tab-fleet-ingestion", "name": "Format transform (GeoJSON)", "func": "// Convert lat/lng floats into a GeoJSON Point for MongoDB 2dsphere queries.\nconst { lat, lng } = msg.payload.coordinates;\nmsg.payload.location = { type: 'Point', coordinates: [lng, lat] };\nreturn msg;", "outputs": 1, "x": 900, "y": 100, "wires": [["n-temporal-agg", "n-spatial-agg", "n-event-flag"]] },
+
+  { "id": "n-temporal-agg", "type": "function", "z": "tab-fleet-ingestion", "name": "Temporal aggregation (rolling avg speed)", "func": "// Rolling window average speed per vehicle over the last 10 readings.\nconst v = msg.payload.vehicle_id;\nconst windows = context.get('speedWindows') || {};\nconst w = windows[v] || [];\nw.push(msg.payload.speed);\nif (w.length > 10) w.shift();\nwindows[v] = w;\ncontext.set('speedWindows', windows);\n\nconst avg = w.reduce((a, b) => a + b, 0) / w.length;\nmsg.payload.avg_speed_rolling = Number(avg.toFixed(1));\nreturn msg;", "outputs": 1, "x": 900, "y": 180, "wires": [["n-router"]] },
+
+  { "id": "n-spatial-agg", "type": "function", "z": "tab-fleet-ingestion", "name": "Spatial aggregation (geohash zone)", "func": "// Simple grid-based geohash substitute: bucket lat/lng into ~100m zones\n// and maintain a live per-zone vehicle count for traffic-density analysis.\nconst { lat, lng } = msg.payload.coordinates;\nconst zoneLat = Math.floor(lat * 1000);\nconst zoneLng = Math.floor(lng * 1000);\nconst zoneId = `zone_${zoneLat}_${zoneLng}`;\nmsg.payload.zone_id = zoneId;\n\nconst zoneCounts = context.get('zoneCounts') || {};\nzoneCounts[zoneId] = (zoneCounts[zoneId] || 0) + 1;\ncontext.set('zoneCounts', zoneCounts);\nmsg.payload.zone_vehicle_count = zoneCounts[zoneId];\nreturn msg;", "outputs": 1, "x": 900, "y": 260, "wires": [["n-router"]] },
+
+  { "id": "n-event-flag", "type": "function", "z": "tab-fleet-ingestion", "name": "Event flagging", "func": "// Combine sharp speed drop + proximity warning into SUSPECTED_CRASH,\n// independent confirmation of the flag the simulator itself sets.\nmsg.payload.status_flags = msg.payload.status_flags || [];\nif (msg.payload.proximity_warning && msg.payload.speed < 5 && !msg.payload.status_flags.includes('SUSPECTED_CRASH')) {\n    msg.payload.status_flags.push('SUSPECTED_CRASH');\n}\nreturn msg;", "outputs": 1, "x": 900, "y": 340, "wires": [["n-router"]] },
+
+  { "id": "n-router", "type": "switch", "z": "tab-fleet-ingestion", "name": "Event Router", "property": "payload.status_flags", "propertyType": "msg", "rules": [
+      { "t": "cont", "v": "SUSPECTED_CRASH", "vt": "str" },
+      { "t": "else" }
+    ], "checkall": "true", "repair": false, "outputs": 2, "x": 1150, "y": 220, "wires": [["n-to-alerting"], ["n-to-geofencing", "n-to-dispatch"]] },
+
+  { "id": "n-to-geofencing", "type": "http request", "z": "tab-fleet-ingestion", "name": "-> Geofencing & Tracking svc", "method": "POST", "ret": "obj", "url": "http://geofencing-tracking:3001/telemetry", "x": 1420, "y": 160, "wires": [["n-debug"]] },
+  { "id": "n-to-dispatch", "type": "http request", "z": "tab-fleet-ingestion", "name": "-> Dispatch & Billing svc", "method": "POST", "ret": "obj", "url": "http://dispatch-billing:3002/ride-events", "x": 1410, "y": 220, "wires": [["n-debug"]] },
+  { "id": "n-to-alerting", "type": "http request", "z": "tab-fleet-ingestion", "name": "-> Alerting & Maintenance svc", "method": "POST", "ret": "obj", "url": "http://alerting-maintenance:3003/hazards", "x": 1420, "y": 300, "wires": [["n-debug"]] },
+
+  { "id": "n-debug", "type": "debug", "z": "tab-fleet-ingestion", "name": "Pipeline output", "active": true, "tosidebar": true, "console": false, "tostatus": false, "complete": "payload", "x": 1650, "y": 220, "wires": [] }
+]

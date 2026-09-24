@@ -1,0 +1,9 @@
+2026-09-24T19:07:41.116000+10:00	Setting desired count to 1.	monitor alarm TargetTracking-service/fleet-cluster/geofencing-tracking-AlarmLow-a4d8fe09-bd4a-41b4-89d3-3d4bca2c1a40 in state ALARM triggered policy fleet-geofencing-tracking-cpu-scaling
+2026-09-24T19:05:41.091000+10:00	Setting desired count to 2.	monitor alarm TargetTracking-service/fleet-cluster/geofencing-tracking-AlarmLow-a4d8fe09-bd4a-41b4-89d3-3d4bca2c1a40 in state ALARM triggered policy fleet-geofencing-tracking-cpu-scaling
+2026-09-24T19:03:41.091000+10:00	Setting desired count to 3.	monitor alarm TargetTracking-service/fleet-cluster/geofencing-tracking-AlarmLow-a4d8fe09-bd4a-41b4-89d3-3d4bca2c1a40 in state ALARM triggered policy fleet-geofencing-tracking-cpu-scaling
+2026-09-24T19:01:35.817000+10:00	Setting desired count to 4.	monitor alarm TargetTracking-service/fleet-cluster/geofencing-tracking-AlarmLow-e9356e60-644a-4430-8bf3-3dd5a757d5a2 in state ALARM triggered policy fleet-geofencing-tracking-backlog-scaling
+2026-09-24T18:43:33.847000+10:00	Setting desired count to 5.	monitor alarm TargetTracking-service/fleet-cluster/geofencing-tracking-AlarmHigh-693ccd86-069a-4cb0-95d3-7000e53b8eb1 in state ALARM triggered policy fleet-geofencing-tracking-backlog-scaling
+2026-09-24T18:40:19.116000+10:00	Setting desired count to 3.	minimum capacity was set to 3
+2026-09-24T18:39:19.062000+10:00	Setting desired count to 2.	minimum capacity was set to 2
+2026-09-24T12:49:41.087000+10:00	Setting desired count to 1.	monitor alarm TargetTracking-service/fleet-cluster/geofencing-tracking-AlarmLow-a4d8fe09-bd4a-41b4-89d3-3d4bca2c1a40 in state ALARM triggered policy fleet-geofencing-tracking-cpu-scaling
+None

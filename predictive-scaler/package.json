@@ -1,0 +1,13 @@
+{
+  "name": "fleet-predictive-scaler",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Hybrid predictive auto-scaler (Holt forecasting + capacity model) for the taxi-fleet microservices. HD research component.",
+  "main": "predictive-scaler.js",
+  "dependencies": {
+    "@aws-sdk/client-application-auto-scaling": "^3.687.0",
+    "@aws-sdk/client-cloudwatch": "^3.687.0",
+    "@aws-sdk/client-ecs": "^3.687.0",
+    "@aws-sdk/client-sqs": "^3.687.0"
+  }
+}

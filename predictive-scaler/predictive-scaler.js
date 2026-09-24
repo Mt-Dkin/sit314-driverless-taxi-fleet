@@ -24,6 +24,9 @@
  *                fall-back for unforecastable surges. MinCapacity is lowered
  *                only after SCALE_DOWN_CONFIRM consecutive lower plans.
  *
+ * ACTIVE_SCALE_IN=1 (ablation): when capacity is no longer needed and the queue
+ *                is empty, also lowers the desired count directly.
+ *
  * Every cycle is logged to predictive-<service>-<timestamp>.csv.
  *
  * Usage:  SERVICE=geofencing-tracking node predictive-scaler.js
@@ -49,6 +52,10 @@ const BETA = parseFloat(process.env.BETA || "0.3");                    // Holt t
 const PHI = parseFloat(process.env.PHI || "0.8");                      // trend damping (1 = plain Holt)
 const SCALE_DOWN_CONFIRM = parseInt(process.env.SCALE_DOWN_CONFIRM || "3", 10);
 const SIM = process.env.SIM === "1";
+// Active scale-in (ablation option): when lowering the minimum and the queue is
+// empty, also set the desired count directly instead of waiting for the slower,
+// more cautious reactive scale-in policy to remove the spare tasks.
+const ACTIVE_SCALE_IN = process.env.ACTIVE_SCALE_IN === "1";
 
 // ---------------- Holt's linear (double exponential) smoothing ----------------
 class Holt {
@@ -160,7 +167,7 @@ async function main() {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
   const logFile = `predictive-${SERVICE}-${SIM ? "SIM-" : ""}${stamp}.csv`;
   fs.writeFileSync(logFile, "time,latest_rate,metric_age_min,level,trend,horizon_min,forecast_rate,backlog,running,desired,planned,min_capacity,action\n");
-  console.log(`[predictive] service=${SERVICE} interval=${INTERVAL_SEC}s mu=${PER_TASK_RATE} rho=${UTILISATION} alpha=${ALPHA} beta=${BETA} phi=${PHI}`);
+  console.log(`[predictive] service=${SERVICE} interval=${INTERVAL_SEC}s mu=${PER_TASK_RATE} rho=${UTILISATION} alpha=${ALPHA} beta=${BETA} phi=${PHI} active_scale_in=${ACTIVE_SCALE_IN}`);
   console.log(`[predictive] logging to ${logFile}`);
 
   if (!SIM) await aws.setMin(MIN_TASKS); // start from a known state
@@ -190,8 +197,18 @@ async function main() {
         currentMin = planned; lowerStreak = 0;
         await aws.setMin(currentMin); // reactive scale-in policy then removes spare tasks
         action = `lower_min_${currentMin}`;
+        if (ACTIVE_SCALE_IN && backlog === 0 && desired > currentMin) {
+          await aws.setDesired(currentMin);
+          action += `_set_desired_${currentMin}`;
+        }
       } else action = `lower_pending_${lowerStreak}`;
-    } else lowerStreak = 0;
+    } else {
+      lowerStreak = 0;
+      if (ACTIVE_SCALE_IN && backlog === 0 && desired > currentMin && planned === currentMin) {
+        await aws.setDesired(currentMin);
+        action = `set_desired_${currentMin}`;
+      }
+    }
 
     const row = [new Date(now).toTimeString().slice(0, 8), latest ? latest.rate.toFixed(1) : "", ageMin.toFixed(1),
       (holt.level ?? 0).toFixed(1), holt.trend.toFixed(2), horizon.toFixed(1), forecast.toFixed(1),

@@ -12,3 +12,4 @@ node-red/aws/certs/*.key
 *.csv
 !results/*.csv
 predictive-scaler/predictive-*.csv
+!results/hd/*.csv
